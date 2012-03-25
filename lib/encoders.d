@@ -35,6 +35,20 @@ string vlq_encoder(R)(in R r) {
     return to!string(joiner(map!vlq_encode(r), ""));
 }
 
+ulong vlq_decode(OR)(out OR results, in string buffer, ulong offset, ulong amount) {
+    ulong number;
+    ulong cur_number;
+    while(true) {
+        cur_number = buffer[offset++];
+        number = (number << 8) + (cur_number & 0x7f);
+        if(!(cur_number & 0x80)) {
+            results.put(number);
+            number = 0;
+            if(!(--amount)) return offset;
+        }
+    }
+}
+
 unittest {
     for(auto i = 0; i < 128;++i) {
         auto number = vlq_encode(i);
@@ -46,7 +60,12 @@ unittest {
     foreach(i, c; vlq_encoder([0,1,2,3,4,5,6])) {
         assert(i == to!ubyte(c));
     }
-    assert(vlq_encoder([10,65,66,67,68]) == "\nABCD");
+    auto d = [10,65,66,67,68];
+    auto encoded = vlq_encoder(d);
+    assert(encoded == "\nABCD");
+    auto app = appender!(ulong[])();
+    assert(vlq_decode(app, encoded, 0, 5) == 5);
+    assert(app.data == d);
 }
 
 string bitpack_encode(R)(ref R numbers) {
@@ -74,8 +93,7 @@ string bitpack_encode(R)(ref R numbers) {
     return to!string(bitpack);
 }
 
-
-ulong bitpack_decode(OR)(ref OR results, in string buffer, ulong offset, ulong amount) {
+ulong bitpack_decode(OR)(out OR results, in string buffer, ulong offset, ulong amount) {
     uint num_bits = buffer[offset++];
     ulong cur_num = 0;
     uint cur_bits = 0;
@@ -110,4 +128,57 @@ unittest {
     assert(encoded == x"01 00");
 }
 
-void main(){}
+ubyte longest_common_prefix(in string prev, in string next) {
+    ubyte index = 0;
+    foreach(chars; zip(prev, next)) {
+        if(chars[0] != chars[1]) break;
+        ++index;
+    }
+    return index;
+}
+
+string front_encode(IR)(in IR strings) {
+    string last_string = "";
+    auto app = appender!(string[]);
+    ubyte common_chars;
+    ubyte suffix_length;
+    char[] buffer;
+    foreach(s; strings) {
+        common_chars = longest_common_prefix(last_string, s);
+        suffix_length = to!ubyte(s.length - common_chars);
+        buffer.length = 2 + suffix_length;
+        buffer[0] = common_chars;
+        buffer[1] = suffix_length;
+        buffer[2..$] = s[common_chars..$];
+        app.put(to!string(buffer));
+        last_string = s;
+    }
+    return to!string(joiner(app.data, ""));
+}
+
+ulong front_decode(OR)(out OR results, in string data, ulong offset, uint amount) {
+    char[] buffer;
+    buffer.length = 256;
+    ubyte common, suffix, len;
+    for(auto i=0; i < amount; i++) {
+        common = data[offset++];
+        suffix = data[offset++];
+        len = to!ubyte(common + suffix);
+        buffer[common..len] = data[offset..offset+suffix];
+        results.put(to!string(buffer[0..len]));
+        offset += suffix;
+    }
+    return offset;
+}
+
+unittest {
+    auto data = front_encode(["hello"]);
+    assert(data== x"00 05 68 65 6c 6c 6f");
+    data = front_encode(["he", "he!"]);
+    assert(data == x"00 02 68 65 02 01 21");
+    auto app = appender!(string[]);
+    auto offset = front_decode(app , data, 0, 2); 
+    assert(offset == data.length);
+    assert(app.data == ["he", "he!"]);
+}
+
